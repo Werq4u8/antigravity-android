@@ -9,7 +9,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowForward
-import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -22,6 +21,21 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.antigravity.mobile.ui.theme.*
 
+data class ModelOption(
+    val id: String,
+    val displayName: String,
+    val description: String = ""
+)
+
+val AVAILABLE_MODELS = listOf(
+    ModelOption("gemini-2.5-flash", "Gemini 2.5 Flash", "Быстрая и эффективная"),
+    ModelOption("gemini-2.5-pro", "Gemini 2.5 Pro", "Максимальное качество и код"),
+    ModelOption("gemini-2.0-flash", "Gemini 2.0 Flash", "Новое поколение"),
+    ModelOption("gemini-2.0-pro-exp-02-05", "Gemini 2.0 Pro Exp", "Экспериментальная модель"),
+    ModelOption("gemini-1.5-pro", "Gemini 1.5 Pro", "Стабильная Pro"),
+    ModelOption("gemini-1.5-flash", "Gemini 1.5 Flash", "Легковесная")
+)
+
 @Composable
 fun AntigravityInputDock(
     inputText: String,
@@ -33,12 +47,8 @@ fun AntigravityInputDock(
     modifier: Modifier = Modifier
 ) {
     var showModelMenu by remember { mutableStateOf(false) }
-    val models = listOf(
-        "Gemini 2.5 Flash",
-        "Gemini 2.5 Pro",
-        "Gemini 1.5 Flash",
-        "Gemini 1.5 Pro"
-    )
+
+    val currentDisplayName = AVAILABLE_MODELS.find { it.id == selectedModel }?.displayName ?: selectedModel
 
     Surface(
         shape = RoundedCornerShape(18.dp),
@@ -103,7 +113,7 @@ fun AntigravityInputDock(
 
                 Spacer(modifier = Modifier.width(6.dp))
 
-                // Model Selector Pill (like in screenshot: "+ Gemini 3.8 Flash (Medium) ^")
+                // Model Selector Pill (e.g. "Gemini 2.5 Flash ▾")
                 Box {
                     Surface(
                         shape = RoundedCornerShape(12.dp),
@@ -117,7 +127,7 @@ fun AntigravityInputDock(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = selectedModel,
+                                text = currentDisplayName,
                                 color = TextSecondary,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Medium
@@ -136,11 +146,18 @@ fun AntigravityInputDock(
                         onDismissRequest = { showModelMenu = false },
                         modifier = Modifier.background(CardDarkVariant)
                     ) {
-                        models.forEach { m ->
+                        AVAILABLE_MODELS.forEach { m ->
                             DropdownMenuItem(
-                                text = { Text(m, color = TextPrimary, fontSize = 12.sp) },
+                                text = {
+                                    Column {
+                                        Text(m.displayName, color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                        if (m.description.isNotBlank()) {
+                                            Text(m.description, color = TextMuted, fontSize = 10.sp)
+                                        }
+                                    }
+                                },
                                 onClick = {
-                                    onSelectModel(m)
+                                    onSelectModel(m.id)
                                     showModelMenu = false
                                 }
                             )
@@ -165,7 +182,7 @@ fun AntigravityInputDock(
 
                 Spacer(modifier = Modifier.width(6.dp))
 
-                // Circular Google Blue Send Button (like in screenshot)
+                // Circular Google Blue Send Button
                 val canSend = isEnabled && inputText.isNotBlank()
                 Box(
                     modifier = Modifier

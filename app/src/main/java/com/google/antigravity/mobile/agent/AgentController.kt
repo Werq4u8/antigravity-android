@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import com.google.antigravity.mobile.model.ChatMessage
+import com.google.antigravity.mobile.model.ConversationSession
 import com.google.antigravity.mobile.model.MessageRole
 import com.google.antigravity.mobile.model.ToolExecution
 import com.google.antigravity.mobile.model.ToolStatus
@@ -11,29 +12,149 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.util.UUID
 
 class AgentController(private val context: Context) {
     val messages = mutableStateListOf<ChatMessage>()
+    val conversations = mutableStateListOf<ConversationSession>()
+    val currentSession = mutableStateOf<ConversationSession?>(null)
+
     val isRunning = mutableStateOf(false)
     val currentStep = mutableStateOf(0)
 
-    val apiKey = mutableStateOf("")
-    val selectedModel = mutableStateOf("gemini-2.5-flash")
+    private val prefs = context.getSharedPreferences("antigravity_prefs", Context.MODE_PRIVATE)
+    val apiKey = mutableStateOf(prefs.getString("api_key", "") ?: "")
+    val selectedModel = mutableStateOf(prefs.getString("selected_model", "gemini-2.5-flash") ?: "gemini-2.5-flash")
 
     val authManager = GoogleAuthManager(context)
     val toolExecutor = ToolExecutor(context)
 
-    // Raw Gemini JSON history
+    private val sessionsDir = File(context.filesDir, "sessions").apply { mkdirs() }
     private val apiHistory = JSONArray()
 
     init {
-        // Welcome message
-        messages.add(
-            ChatMessage(
-                role = MessageRole.AGENT,
-                content = "👋 Привет! Я Antigravity Mobile. Я подключен к файловой системе, умею выполнять команды через '/', управлять репозиториями Git/GitHub и компилировать APK прямо на устройстве. Что создадим?"
-            )
+        loadConversations()
+        if (conversations.isEmpty()) {
+            createNewConversation()
+        } else {
+            selectConversation(conversations.first())
+        }
+    }
+
+    fun saveSettings(newKey: String, newModel: String) {
+        apiKey.value = newKey
+        selectedModel.value = newModel
+        prefs.edit().apply {
+            putString("api_key", newKey)
+            putString("selected_model", newModel)
+            apply()
+        }
+    }
+
+    private fun loadConversations() {
+        conversations.clear()
+        val indexFile = File(sessionsDir, "index.json")
+        if (indexFile.exists()) {
+            try {
+                val array = JSONArray(indexFile.readText())
+                for (i in 0 until array.length()) {
+                    conversations.add(ConversationSession.fromJson(array.getJSONObject(i)))
+                }
+            } catch (e: Exception) {
+                // If corrupted, fallback
+            }
+        }
+    }
+
+    private fun saveConversationsIndex() {
+        val array = JSONArray()
+        conversations.forEach { array.put(it.toJson()) }
+        File(sessionsDir, "index.json").writeText(array.toString())
+    }
+
+    fun createNewConversation(title: String = "New Conversation") {
+        val session = ConversationSession(
+            id = UUID.randomUUID().toString(),
+            title = title
         )
+        conversations.add(0, session)
+        saveConversationsIndex()
+        selectConversation(session)
+    }
+
+    fun selectConversation(session: ConversationSession) {
+        currentSession.value = session
+        messages.clear()
+        apiHistory.let {
+            while (it.length() > 0) it.remove(0)
+        }
+
+        val sessionFile = File(sessionsDir, "${session.id}.json")
+        if (sessionFile.exists()) {
+            try {
+                val json = JSONObject(sessionFile.readText())
+                val msgsArray = json.optJSONArray("messages")
+                if (msgsArray != null) {
+                    for (i in 0 until msgsArray.length()) {
+                        val m = ChatMessage.fromJson(msgsArray.getJSONObject(i))
+                        messages.add(m)
+                        // Reconstruct apiHistory
+                        if (m.role == MessageRole.USER) {
+                            apiHistory.put(JSONObject().apply {
+                                put("role", "user")
+                                put("parts", JSONArray().put(JSONObject().put("text", m.content)))
+                            })
+                        } else if (m.role == MessageRole.AGENT) {
+                            apiHistory.put(JSONObject().apply {
+                                put("role", "model")
+                                put("parts", JSONArray().put(JSONObject().put("text", m.content)))
+                            })
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                // Ignore corrupted file
+            }
+        }
+
+        if (messages.isEmpty()) {
+            messages.add(
+                ChatMessage(
+                    role = MessageRole.AGENT,
+                    content = "👋 Привет! Я Antigravity Mobile. Я подключен к файловой системе, умею выполнять команды через '/', управлять репозиториями Git/GitHub и компилировать APK прямо на устройстве. Что создадим?"
+                )
+            )
+            saveCurrentConversation()
+        }
+    }
+
+    fun saveCurrentConversation() {
+        val session = currentSession.value ?: return
+        val sessionFile = File(sessionsDir, "${session.id}.json")
+        val json = JSONObject().apply {
+            put("id", session.id)
+            put("title", session.title)
+            val msgsArray = JSONArray()
+            messages.forEach { msgsArray.put(it.toJson()) }
+            put("messages", msgsArray)
+        }
+        sessionFile.writeText(json.toString())
+        session.updatedAt = System.currentTimeMillis()
+        saveConversationsIndex()
+    }
+
+    fun deleteConversation(session: ConversationSession) {
+        conversations.remove(session)
+        File(sessionsDir, "${session.id}.json").delete()
+        saveConversationsIndex()
+        if (currentSession.value?.id == session.id) {
+            if (conversations.isNotEmpty()) {
+                selectConversation(conversations.first())
+            } else {
+                createNewConversation()
+            }
+        }
     }
 
     suspend fun sendMessage(userText: String) = withContext(Dispatchers.IO) {
@@ -47,17 +168,26 @@ class AgentController(private val context: Context) {
                         content = "⚠️ Пожалуйста, войдите через Google Аккаунт или укажите API Key во вкладке Настройки (Settings)."
                     )
                 )
+                saveCurrentConversation()
             }
             return@withContext
         }
 
+        // Auto update conversation title on first message
+        val session = currentSession.value
+        if (session != null && (session.title == "New Conversation" || session.title.isBlank())) {
+            val autoTitle = if (userText.length > 30) userText.take(30) + "..." else userText
+            session.title = autoTitle
+            saveConversationsIndex()
+        }
+
         withContext(Dispatchers.Main) {
             messages.add(ChatMessage(role = MessageRole.USER, content = userText))
+            saveCurrentConversation()
             isRunning.value = true
             currentStep.value = 0
         }
 
-        // Add to API history
         val userContentObj = JSONObject().apply {
             put("role", "user")
             put("parts", JSONArray().put(JSONObject().put("text", userText)))
@@ -87,7 +217,6 @@ class AgentController(private val context: Context) {
                     toolsDeclarations = toolDeclarations
                 )
 
-                // Add model response into API history
                 val modelContent = response.rawJson.optJSONArray("candidates")
                     ?.optJSONObject(0)
                     ?.optJSONObject("content")
@@ -99,6 +228,7 @@ class AgentController(private val context: Context) {
                 if (!response.text.isNullOrBlank()) {
                     withContext(Dispatchers.Main) {
                         messages.add(ChatMessage(role = MessageRole.AGENT, content = response.text))
+                        saveCurrentConversation()
                     }
 
                     // Check for slash commands in model text (e.g. /git, /run, /build, /install, /write)
@@ -109,7 +239,6 @@ class AgentController(private val context: Context) {
                 }
 
                 if (response.functionCalls.isEmpty()) {
-                    // Agent finished its turns
                     break
                 }
 
@@ -130,9 +259,9 @@ class AgentController(private val context: Context) {
                             toolExecutions = mutableListOf(toolExecution)
                         )
                         messages.add(toolMsg)
+                        saveCurrentConversation()
                     }
 
-                    // Execute tool
                     val result = toolExecutor.execute(fc.name, fc.args)
 
                     withContext(Dispatchers.Main) {
@@ -142,6 +271,7 @@ class AgentController(private val context: Context) {
                         } else {
                             ToolStatus.SUCCESS
                         }
+                        saveCurrentConversation()
                     }
 
                     functionResponseParts.put(JSONObject().apply {
@@ -154,7 +284,6 @@ class AgentController(private val context: Context) {
                     })
                 }
 
-                // Add tool results back to API history
                 apiHistory.put(JSONObject().apply {
                     put("role", "function")
                     put("parts", functionResponseParts)
@@ -168,11 +297,13 @@ class AgentController(private val context: Context) {
                         content = "❌ Ошибка: ${e.message}"
                     )
                 )
+                saveCurrentConversation()
             }
         } finally {
             withContext(Dispatchers.Main) {
                 isRunning.value = false
                 currentStep.value = 0
+                saveCurrentConversation()
             }
         }
     }
@@ -211,6 +342,7 @@ class AgentController(private val context: Context) {
                     toolExecutions = mutableListOf(toolExecution)
                 )
             )
+            saveCurrentConversation()
         }
 
         val res = toolExecutor.execute(toolName, argsJson)
@@ -218,6 +350,7 @@ class AgentController(private val context: Context) {
         withContext(Dispatchers.Main) {
             toolExecution.result = res
             toolExecution.status = if (res.startsWith("Error") || res.contains("Failed")) ToolStatus.FAILED else ToolStatus.SUCCESS
+            saveCurrentConversation()
         }
     }
 }

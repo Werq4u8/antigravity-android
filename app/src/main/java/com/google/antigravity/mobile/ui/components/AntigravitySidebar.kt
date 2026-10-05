@@ -20,39 +20,26 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.google.antigravity.mobile.model.ConversationSession
 import com.google.antigravity.mobile.ui.theme.*
-
-data class ConversationItem(
-    val id: String,
-    val title: String,
-    val timeAgo: String,
-    val isActive: Boolean = false,
-    val hasBlueDot: Boolean = false
-)
 
 @Composable
 fun AntigravitySidebar(
-    currentTitle: String,
+    conversations: List<ConversationSession>,
+    currentSessionId: String?,
     onNewConversation: () -> Unit,
-    onSelectConversation: (String) -> Unit,
+    onSelectConversation: (ConversationSession) -> Unit,
+    onDeleteConversation: (ConversationSession) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenWorkspace: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val sampleConversations = listOf(
-        ConversationItem("1", currentTitle, "1m", isActive = true, hasBlueDot = true),
-        ConversationItem("2", "Root Manager and Hiding Modules", "11m", hasBlueDot = true),
-        ConversationItem("3", "Android для сборки NetHunter", "3d", hasBlueDot = true),
-        ConversationItem("4", "Патчинг Boot.img для ядра", "3d", hasBlueDot = true),
-        ConversationItem("5", "Создание APK калькулятора", "7d", hasBlueDot = false),
-        ConversationItem("6", "Секундомер с анимацией", "8d", hasBlueDot = false)
-    )
-
     Column(
         modifier = modifier
             .fillMaxHeight()
             .width(290.dp)
             .background(SidebarDark)
+            .statusBarsPadding()
             .border(width = 1.dp, color = BorderDark.copy(alpha = 0.5f))
             .padding(14.dp)
     ) {
@@ -108,47 +95,7 @@ fun AntigravitySidebar(
         Spacer(modifier = Modifier.height(14.dp))
 
         // Quick Navigation
-        SidebarNavItem(icon = Icons.Default.History, title = "Conversation History")
-        SidebarNavItem(icon = Icons.Default.Schedule, title = "Scheduled Tasks")
         SidebarNavItem(icon = Icons.Default.Folder, title = "Workspace Files", onClick = onOpenWorkspace)
-
-        Spacer(modifier = Modifier.height(14.dp))
-
-        // Projects Section
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(
-                text = "Projects",
-                color = TextMuted,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f)
-            )
-            Icon(Icons.Default.FilterList, contentDescription = null, tint = TextMuted, modifier = Modifier.size(14.dp))
-            Spacer(modifier = Modifier.width(6.dp))
-            Icon(Icons.Default.Add, contentDescription = null, tint = TextMuted, modifier = Modifier.size(14.dp))
-        }
-
-        Spacer(modifier = Modifier.height(6.dp))
-
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 4.dp)
-        ) {
-            Icon(Icons.Default.FolderOpen, contentDescription = null, tint = TextMuted, modifier = Modifier.size(14.dp))
-            Spacer(modifier = Modifier.width(6.dp))
-            Text(
-                text = "antigravity-mobile",
-                color = TextSecondary,
-                fontSize = 12.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
 
         Spacer(modifier = Modifier.height(14.dp))
 
@@ -158,60 +105,75 @@ fun AntigravitySidebar(
             modifier = Modifier.fillMaxWidth()
         ) {
             Text(
-                text = "Conversations",
+                text = "Conversations (${conversations.size})",
                 color = TextMuted,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f)
             )
-            Text("+", color = TextMuted, fontSize = 14.sp)
+            IconButton(onClick = onNewConversation, modifier = Modifier.size(20.dp)) {
+                Icon(Icons.Default.Add, contentDescription = "Add", tint = TextMuted, modifier = Modifier.size(16.dp))
+            }
         }
 
         Spacer(modifier = Modifier.height(6.dp))
 
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            items(sampleConversations) { conv ->
-                val bg = if (conv.isActive) CardDarkVariant else Color.Transparent
-                val borderMod = if (conv.isActive) Modifier.border(1.dp, BorderDark, RoundedCornerShape(6.dp)) else Modifier
+        if (conversations.isEmpty()) {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Text("No chats yet", color = TextMuted, fontSize = 12.sp)
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items(conversations) { conv ->
+                    val isActive = conv.id == currentSessionId
+                    val bg = if (isActive) CardDarkVariant else Color.Transparent
+                    val borderMod = if (isActive) Modifier.border(1.dp, BorderDark, RoundedCornerShape(6.dp)) else Modifier
 
-                Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = bg,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .then(borderMod)
-                        .clickable { onSelectConversation(conv.title) }
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = bg,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(borderMod)
+                            .clickable { onSelectConversation(conv) }
                     ) {
-                        Text(
-                            text = conv.title,
-                            color = if (conv.isActive) TextPrimary else TextSecondary,
-                            fontSize = 12.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        if (conv.hasBlueDot) {
-                            Box(
-                                modifier = Modifier
-                                    .size(6.dp)
-                                    .clip(CircleShape)
-                                    .background(AntigravityBlue)
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (isActive) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(6.dp)
+                                        .clip(CircleShape)
+                                        .background(AntigravityBlue)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                            }
+                            Text(
+                                text = conv.title,
+                                color = if (isActive) TextPrimary else TextSecondary,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
+                            IconButton(
+                                onClick = { onDeleteConversation(conv) },
+                                modifier = Modifier.size(20.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Delete",
+                                    tint = TextMuted,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
                         }
-                        Text(
-                            text = conv.timeAgo,
-                            color = TextMuted,
-                            fontSize = 11.sp
-                        )
                     }
                 }
             }
@@ -222,18 +184,19 @@ fun AntigravitySidebar(
         // Bottom Settings Button
         Surface(
             shape = RoundedCornerShape(6.dp),
-            color = Color.Transparent,
+            color = CardDarkVariant,
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable { onOpenSettings() }
+                .border(1.dp, BorderDark, RoundedCornerShape(6.dp))
         ) {
             Row(
-                modifier = Modifier.padding(vertical = 8.dp),
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Default.Settings, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(16.dp))
+                Icon(Icons.Default.Settings, contentDescription = null, tint = TextPrimary, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Settings", color = TextSecondary, fontSize = 13.sp)
+                Text("Settings & Login", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
             }
         }
     }
@@ -250,9 +213,9 @@ private fun SidebarNavItem(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onClick() }
-            .padding(vertical = 5.dp)
+            .padding(vertical = 6.dp)
     ) {
-        Icon(icon, contentDescription = null, tint = TextMuted, modifier = Modifier.size(15.dp))
+        Icon(icon, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
         Spacer(modifier = Modifier.width(8.dp))
         Text(title, color = TextSecondary, fontSize = 12.sp)
     }

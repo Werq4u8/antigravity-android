@@ -1,5 +1,7 @@
 package com.google.antigravity.mobile.ui
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -18,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -38,13 +41,13 @@ fun MainScreen(controller: AgentController) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
-    var conversationTitle by remember { mutableStateOf("Building Android App via AI Agent") }
     var inputText by remember { mutableStateOf("") }
     var showReviewModal by remember { mutableStateOf(false) }
     var showBuildModal by remember { mutableStateOf(false) }
     var showSettingsModal by remember { mutableStateOf(false) }
 
     val listState = rememberLazyListState()
+    val currentTitle = controller.currentSession.value?.title ?: "New Conversation"
 
     // Auto scroll to bottom
     LaunchedEffect(controller.messages.size) {
@@ -61,15 +64,18 @@ fun MainScreen(controller: AgentController) {
                 modifier = Modifier.width(300.dp)
             ) {
                 AntigravitySidebar(
-                    currentTitle = conversationTitle,
+                    conversations = controller.conversations,
+                    currentSessionId = controller.currentSession.value?.id,
                     onNewConversation = {
-                        controller.messages.clear()
-                        conversationTitle = "New Android Project"
+                        controller.createNewConversation()
                         scope.launch { drawerState.close() }
                     },
-                    onSelectConversation = { title ->
-                        conversationTitle = title
+                    onSelectConversation = { session ->
+                        controller.selectConversation(session)
                         scope.launch { drawerState.close() }
+                    },
+                    onDeleteConversation = { session ->
+                        controller.deleteConversation(session)
                     },
                     onOpenSettings = {
                         showSettingsModal = true
@@ -85,31 +91,35 @@ fun MainScreen(controller: AgentController) {
     ) {
         Scaffold(
             topBar = {
-                // Top Bar mimicking Antigravity Desktop
+                // Top Bar with statusBarsPadding so it's NEVER hidden under notification shade
                 Surface(
                     color = BgDark,
-                    modifier = Modifier.fillMaxWidth().border(width = 0.5.dp, color = BorderDark)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .border(width = 0.5.dp, color = BorderDark)
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(
                             onClick = { scope.launch { drawerState.open() } },
-                            modifier = Modifier.size(32.dp)
+                            modifier = Modifier.size(36.dp)
                         ) {
-                            Icon(Icons.Default.Menu, contentDescription = "Sidebar", tint = TextSecondary, modifier = Modifier.size(20.dp))
+                            Icon(Icons.Default.Menu, contentDescription = "Sidebar", tint = TextSecondary, modifier = Modifier.size(22.dp))
                         }
 
                         Spacer(modifier = Modifier.width(8.dp))
 
                         Text(
-                            text = conversationTitle,
+                            text = currentTitle,
                             color = TextPrimary,
-                            fontSize = 14.sp,
+                            fontSize = 15.sp,
                             fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
                             modifier = Modifier.weight(1f)
                         )
 
@@ -122,10 +132,10 @@ fun MainScreen(controller: AgentController) {
                                 .border(1.dp, AntigravityBlue.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(Icons.Default.Build, contentDescription = null, tint = AntigravityBlue, modifier = Modifier.size(13.dp))
+                                Icon(Icons.Default.Build, contentDescription = null, tint = AntigravityBlue, modifier = Modifier.size(14.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text("Build APK", color = AntigravityBlue, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             }
@@ -133,11 +143,12 @@ fun MainScreen(controller: AgentController) {
 
                         Spacer(modifier = Modifier.width(8.dp))
 
+                        // Settings & Login button
                         IconButton(
                             onClick = { showSettingsModal = true },
-                            modifier = Modifier.size(32.dp)
+                            modifier = Modifier.size(36.dp)
                         ) {
-                            Icon(Icons.Default.Settings, contentDescription = "Settings", tint = TextSecondary, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.Settings, contentDescription = "Settings", tint = TextSecondary, modifier = Modifier.size(20.dp))
                         }
                     }
                 }
@@ -149,6 +160,7 @@ fun MainScreen(controller: AgentController) {
                     .fillMaxSize()
                     .padding(paddingValues)
                     .padding(horizontal = 12.dp)
+                    .navigationBarsPadding()
             ) {
                 // Chat Stream
                 LazyColumn(
@@ -187,7 +199,9 @@ fun MainScreen(controller: AgentController) {
                     inputText = inputText,
                     onInputChange = { inputText = it },
                     selectedModel = controller.selectedModel.value,
-                    onSelectModel = { controller.selectedModel.value = it },
+                    onSelectModel = {
+                        controller.saveSettings(controller.apiKey.value, it)
+                    },
                     onSend = {
                         val prompt = inputText.trim()
                         if (prompt.isNotBlank()) {
@@ -198,7 +212,7 @@ fun MainScreen(controller: AgentController) {
                         }
                     },
                     isEnabled = !controller.isRunning.value,
-                    modifier = Modifier.padding(bottom = 12.dp)
+                    modifier = Modifier.padding(bottom = 8.dp)
                 )
             }
         }
@@ -224,7 +238,7 @@ fun MainScreen(controller: AgentController) {
         )
     }
 
-    // Settings Modal
+    // Settings & Account Login Modal
     if (showSettingsModal) {
         SettingsModal(
             controller = controller,
@@ -302,7 +316,7 @@ fun AgentMessageCard(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Code Change Pill (matching screenshot: "26 files changed +2938 -0 [Review]")
+            // Code Change Pill
             CodeChangePill(
                 filesCount = 4,
                 additions = 186,
@@ -312,7 +326,7 @@ fun AgentMessageCard(
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            // Reactions row (thumbs up, thumbs down, copy)
+            // Reactions row
             MessageReactions()
         }
     }
@@ -611,6 +625,11 @@ fun SettingsModal(
     controller: AgentController,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
+    var keyInput by remember { mutableStateOf(controller.apiKey.value) }
+    var selectedModel by remember { mutableStateOf(controller.selectedModel.value) }
+    var oauthInput by remember { mutableStateOf(controller.authManager.currentOAuthToken ?: "") }
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = CardDark
@@ -618,10 +637,11 @@ fun SettingsModal(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(20.dp)
+                .padding(horizontal = 20.dp, vertical = 12.dp)
+                .navigationBarsPadding()
         ) {
             Text(
-                text = "⚙️ Settings",
+                text = "⚙️ Settings & Authentication",
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold,
                 color = TextPrimary
@@ -631,31 +651,51 @@ fun SettingsModal(
 
             // Google Account OAuth Section
             Surface(
-                shape = RoundedCornerShape(8.dp),
+                shape = RoundedCornerShape(10.dp),
                 color = CardDarkVariant,
-                modifier = Modifier.fillMaxWidth().border(1.dp, BorderDark, RoundedCornerShape(8.dp))
+                modifier = Modifier.fillMaxWidth().border(1.dp, BorderDark, RoundedCornerShape(10.dp))
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
+                Column(modifier = Modifier.padding(14.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.AccountCircle, contentDescription = null, tint = GoogleBlue, modifier = Modifier.size(20.dp))
+                        Icon(Icons.Default.AccountCircle, contentDescription = null, tint = GoogleBlue, modifier = Modifier.size(24.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Google Account Authorization", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = TextPrimary)
+                        Column {
+                            Text("Google Account / OAuth 2.0", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = TextPrimary)
+                            Text(
+                                text = if (controller.authManager.isAuthorized()) "Connected via Google OAuth" else "Not logged in (Use Token or API Key below)",
+                                fontSize = 11.sp,
+                                color = if (controller.authManager.isAuthorized()) GoogleGreen else TextMuted
+                            )
+                        }
                     }
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = if (controller.authManager.isAuthorized()) "Status: Connected to Google Account" else "Status: Not logged in (using API key)",
-                        fontSize = 11.sp,
-                        color = if (controller.authManager.isAuthorized()) GoogleGreen else TextMuted
-                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    OutlinedButton(
+                        onClick = {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://aistudio.google.com/app/apikey"))
+                            context.startActivity(intent)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = GoogleBlue),
+                        border = ButtonDefaults.outlinedButtonBorder.copy(brush = androidx.compose.ui.graphics.SolidColor(BorderDark))
+                    ) {
+                        Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Get Free API Key from Google AI Studio", fontSize = 12.sp)
+                    }
+
                     Spacer(modifier = Modifier.height(8.dp))
-                    var oauthInput by remember { mutableStateOf(controller.authManager.currentOAuthToken ?: "") }
+
+                    Text("Google OAuth Bearer Token (Optional):", fontSize = 11.sp, color = TextSecondary)
+                    Spacer(modifier = Modifier.height(4.dp))
                     OutlinedTextField(
                         value = oauthInput,
                         onValueChange = {
                             oauthInput = it
                             controller.authManager.saveOAuthToken(it)
                         },
-                        placeholder = { Text("Enter Google OAuth / Bearer Token...", color = TextMuted, fontSize = 11.sp) },
+                        placeholder = { Text("ya29.a0...", color = TextMuted, fontSize = 11.sp) },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
@@ -668,11 +708,11 @@ fun SettingsModal(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            Text("Google Gemini API Key (Alternative)", fontSize = 12.sp, color = TextSecondary)
+            Text("Gemini API Key:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
             Spacer(modifier = Modifier.height(4.dp))
             OutlinedTextField(
-                value = controller.apiKey.value,
-                onValueChange = { controller.apiKey.value = it },
+                value = keyInput,
+                onValueChange = { keyInput = it },
                 placeholder = { Text("AIzaSy...", color = TextMuted) },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
@@ -684,36 +724,44 @@ fun SettingsModal(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            Text("Model", fontSize = 12.sp, color = TextSecondary)
+            Text("Model:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
             Spacer(modifier = Modifier.height(4.dp))
-            val models = listOf("gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-flash", "gemini-1.5-pro")
-            models.forEach { m ->
+
+            AVAILABLE_MODELS.forEach { m ->
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { controller.selectedModel.value = m }
+                        .clickable { selectedModel = m.id }
                         .padding(vertical = 3.dp)
                 ) {
                     RadioButton(
-                        selected = controller.selectedModel.value == m,
-                        onClick = { controller.selectedModel.value = m },
+                        selected = selectedModel == m.id,
+                        onClick = { selectedModel = m.id },
                         colors = RadioButtonDefaults.colors(selectedColor = AntigravityBlue)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text(m, color = TextPrimary, fontSize = 13.sp)
+                    Column {
+                        Text(m.displayName, color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        if (m.description.isNotBlank()) {
+                            Text(m.description, color = TextMuted, fontSize = 10.sp)
+                        }
+                    }
                 }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
 
             Button(
-                onClick = onDismiss,
+                onClick = {
+                    controller.saveSettings(keyInput.trim(), selectedModel)
+                    onDismiss()
+                },
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(containerColor = AntigravityBlue),
                 shape = RoundedCornerShape(8.dp)
             ) {
-                Text("Save and Close", color = Color.White)
+                Text("Save and Close", color = Color.White, fontWeight = FontWeight.Bold)
             }
         }
     }
