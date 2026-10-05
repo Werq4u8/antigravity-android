@@ -1,0 +1,223 @@
+package com.google.antigravity.mobile.agent
+
+import android.content.Context
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import com.google.antigravity.mobile.model.ChatMessage
+import com.google.antigravity.mobile.model.MessageRole
+import com.google.antigravity.mobile.model.ToolExecution
+import com.google.antigravity.mobile.model.ToolStatus
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+
+class AgentController(private val context: Context) {
+    val messages = mutableStateListOf<ChatMessage>()
+    val isRunning = mutableStateOf(false)
+    val currentStep = mutableStateOf(0)
+
+    val apiKey = mutableStateOf("")
+    val selectedModel = mutableStateOf("gemini-2.5-flash")
+
+    val authManager = GoogleAuthManager(context)
+    val toolExecutor = ToolExecutor(context)
+
+    // Raw Gemini JSON history
+    private val apiHistory = JSONArray()
+
+    init {
+        // Welcome message
+        messages.add(
+            ChatMessage(
+                role = MessageRole.AGENT,
+                content = "👋 Привет! Я Antigravity Mobile. Я подключен к файловой системе, умею выполнять команды через '/', управлять репозиториями Git/GitHub и компилировать APK прямо на устройстве. Что создадим?"
+            )
+        )
+    }
+
+    suspend fun sendMessage(userText: String) = withContext(Dispatchers.IO) {
+        val hasAuth = apiKey.value.isNotBlank() || authManager.isAuthorized()
+
+        if (!hasAuth) {
+            withContext(Dispatchers.Main) {
+                messages.add(
+                    ChatMessage(
+                        role = MessageRole.AGENT,
+                        content = "⚠️ Пожалуйста, войдите через Google Аккаунт или укажите API Key во вкладке Настройки (Settings)."
+                    )
+                )
+            }
+            return@withContext
+        }
+
+        withContext(Dispatchers.Main) {
+            messages.add(ChatMessage(role = MessageRole.USER, content = userText))
+            isRunning.value = true
+            currentStep.value = 0
+        }
+
+        // Add to API history
+        val userContentObj = JSONObject().apply {
+            put("role", "user")
+            put("parts", JSONArray().put(JSONObject().put("text", userText)))
+        }
+        apiHistory.put(userContentObj)
+
+        val client = GeminiApiClient(
+            apiKey = apiKey.value.takeIf { it.isNotBlank() },
+            oauthToken = authManager.currentOAuthToken,
+            model = selectedModel.value
+        )
+        val toolDeclarations = ToolDefinitions.getDeclarations()
+
+        var turns = 0
+        val maxTurns = 15
+
+        try {
+            while (turns < maxTurns) {
+                turns++
+                withContext(Dispatchers.Main) {
+                    currentStep.value = turns
+                }
+
+                val response = client.generateContent(
+                    history = apiHistory,
+                    systemInstruction = ToolDefinitions.SYSTEM_PROMPT,
+                    toolsDeclarations = toolDeclarations
+                )
+
+                // Add model response into API history
+                val modelContent = response.rawJson.optJSONArray("candidates")
+                    ?.optJSONObject(0)
+                    ?.optJSONObject("content")
+
+                if (modelContent != null) {
+                    apiHistory.put(modelContent)
+                }
+
+                if (!response.text.isNullOrBlank()) {
+                    withContext(Dispatchers.Main) {
+                        messages.add(ChatMessage(role = MessageRole.AGENT, content = response.text))
+                    }
+
+                    // Check for slash commands in model text (e.g. /git, /run, /build, /install, /write)
+                    val slashCommands = SlashCommandParser.parseCommands(response.text)
+                    for (sc in slashCommands) {
+                        executeSlashCommand(sc)
+                    }
+                }
+
+                if (response.functionCalls.isEmpty()) {
+                    // Agent finished its turns
+                    break
+                }
+
+                // Formal Tool calling
+                val functionResponseParts = JSONArray()
+
+                for (fc in response.functionCalls) {
+                    val toolExecution = ToolExecution(
+                        toolName = fc.name,
+                        arguments = fc.args.toString(2),
+                        status = ToolStatus.RUNNING
+                    )
+
+                    withContext(Dispatchers.Main) {
+                        val toolMsg = ChatMessage(
+                            role = MessageRole.TOOL,
+                            content = "Tool: ${fc.name}",
+                            toolExecutions = mutableListOf(toolExecution)
+                        )
+                        messages.add(toolMsg)
+                    }
+
+                    // Execute tool
+                    val result = toolExecutor.execute(fc.name, fc.args)
+
+                    withContext(Dispatchers.Main) {
+                        toolExecution.result = result
+                        toolExecution.status = if (result.startsWith("Error") || result.contains("BUILD FAILED")) {
+                            ToolStatus.FAILED
+                        } else {
+                            ToolStatus.SUCCESS
+                        }
+                    }
+
+                    functionResponseParts.put(JSONObject().apply {
+                        put("functionResponse", JSONObject().apply {
+                            put("name", fc.name)
+                            put("response", JSONObject().apply {
+                                put("output", result)
+                            })
+                        })
+                    })
+                }
+
+                // Add tool results back to API history
+                apiHistory.put(JSONObject().apply {
+                    put("role", "function")
+                    put("parts", functionResponseParts)
+                })
+            }
+        } catch (e: Exception) {
+            withContext(Dispatchers.Main) {
+                messages.add(
+                    ChatMessage(
+                        role = MessageRole.AGENT,
+                        content = "❌ Ошибка: ${e.message}"
+                    )
+                )
+            }
+        } finally {
+            withContext(Dispatchers.Main) {
+                isRunning.value = false
+                currentStep.value = 0
+            }
+        }
+    }
+
+    private suspend fun executeSlashCommand(cmd: ParsedCommand) {
+        val toolName = when (cmd.commandType) {
+            "git" -> "git_command"
+            "build" -> "build_apk"
+            "install" -> "install_apk"
+            "write" -> "write_to_file"
+            else -> "run_command"
+        }
+
+        val argsJson = JSONObject()
+        when (toolName) {
+            "git_command" -> argsJson.put("args", cmd.argument)
+            "run_command" -> argsJson.put("command", "${cmd.commandType} ${cmd.argument}".trim())
+            "write_to_file" -> {
+                argsJson.put("file_path", cmd.argument)
+                argsJson.put("content", cmd.payload)
+            }
+            else -> {}
+        }
+
+        val toolExecution = ToolExecution(
+            toolName = "/${cmd.commandType} ${cmd.argument}".trim(),
+            arguments = argsJson.toString(2),
+            status = ToolStatus.RUNNING
+        )
+
+        withContext(Dispatchers.Main) {
+            messages.add(
+                ChatMessage(
+                    role = MessageRole.TOOL,
+                    content = "Slash Command: /${cmd.commandType}",
+                    toolExecutions = mutableListOf(toolExecution)
+                )
+            )
+        }
+
+        val res = toolExecutor.execute(toolName, argsJson)
+
+        withContext(Dispatchers.Main) {
+            toolExecution.result = res
+            toolExecution.status = if (res.startsWith("Error") || res.contains("Failed")) ToolStatus.FAILED else ToolStatus.SUCCESS
+        }
+    }
+}

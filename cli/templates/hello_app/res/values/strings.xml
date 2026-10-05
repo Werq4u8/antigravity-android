@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Antigravity Demo</string>
+    <string name="welcome_text">Built by Gemini with Antigravity Mobile!</string>
+    <string name="btn_click">Click Me</string>
+</resources>
